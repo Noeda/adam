@@ -9,6 +9,7 @@
 
 module Numeric.ADAM
   ( adamGradientDescent
+  , adamGradientDescentPipe
   , AdamConfig(..)
   , defaultAdamConfig )
   where
@@ -17,6 +18,7 @@ import Control.DeepSeq
 import Control.Monad.Trans.State.Lazy
 import Data.Aeson
 import Data.Binary hiding ( get, put )
+import Data.Functor.Identity
 import Data.Data
 import Data.Reflection
 import Data.Foldable
@@ -24,8 +26,7 @@ import Data.Traversable
 import GHC.Generics
 import Numeric.AD
 import Numeric.AD.Internal.Reverse
-
-import Debug.Trace
+import Pipes hiding ( for )
 
 data AdamConfig a = AdamConfig
   { stepSize :: !a
@@ -58,13 +59,31 @@ zipWithTraversable structure zipping action = flip evalState zipping $
 {-# INLINE zipWithTraversable #-}
 
 -- | Same as `gradientDescent` but the descent function is ADAM.
-adamGradientDescent :: (Traversable f, Fractional a, Floating a, Ord a, Show a, Show (f a), NFData a)
+adamGradientDescent :: (Traversable f, Fractional a, Floating a, Ord a, NFData a)
                     => (forall s. Reifies s Tape => f (Reverse s a) -> Reverse s a)
                     -> f a
                     -> AdamConfig a
                     -> [f a]
 adamGradientDescent evaluator structure config =
-  flip evalState initial_state $ loop_it structure
+  runIdentity $ runEffect $
+    adamGradientDescentPipe (\structure -> return $ grad evaluator structure)
+                            structure
+                            config >->
+    yielder
+ where
+  yielder = do
+    item <- await
+    (item:) <$> yielder
+
+-- | A piped version of `adamGradientDescent`. This lets you thread a monad
+-- through the process.
+adamGradientDescentPipe :: (Traversable f, Fractional a, Floating a, Ord a, NFData a, Monad m)
+                        => (f a -> m (f a))
+                        -> f a
+                        -> AdamConfig a
+                        -> Producer (f a) m void
+adamGradientDescentPipe next_gradient structure config =
+  flip evalStateT initial_state $ loop_it structure
  where
   initial_state = AdamState
     { firstMoment  = replicate num_parameters 0
@@ -75,7 +94,7 @@ adamGradientDescent evaluator structure config =
   num_parameters = length $ toList structure
 
   loop_it structure = do
-    let gradient = force $ toList $ grad evaluator structure
+    gradient <- fmap toList $ lift $ lift $ next_gradient structure
     st <- get
 
     let new_first_moment = flip fmap (zip (firstMoment st) gradient) $ \(m, g) ->
@@ -96,5 +115,6 @@ adamGradientDescent evaluator structure config =
            , firstMoment = new_first_moment
            , secondMoment = new_second_moment }
 
-    st `deepseq` ((new_structure:) <$> loop_it new_structure)
+    lift $ yield new_structure
+    st `deepseq` loop_it new_structure
 
