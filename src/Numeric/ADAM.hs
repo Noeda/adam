@@ -9,6 +9,7 @@
 
 module Numeric.ADAM
   ( adamGradientDescent
+  , adamGradientDescent'
   , adamGradientDescentPipe
   , AdamConfig(..)
   , defaultAdamConfig )
@@ -59,7 +60,7 @@ zipWithTraversable structure zipping action = flip evalState zipping $
 {-# INLINE zipWithTraversable #-}
 
 -- | Same as `gradientDescent` but the descent function is ADAM.
-adamGradientDescent :: (Traversable f, Fractional a, Floating a, Ord a, NFData a)
+adamGradientDescent :: (Traversable f, Fractional a, Floating a, NFData a)
                     => (forall s. Reifies s Tape => f (Reverse s a) -> Reverse s a)
                     -> f a
                     -> AdamConfig a
@@ -75,9 +76,18 @@ adamGradientDescent evaluator structure config =
     item <- await
     (item:) <$> yielder
 
+-- | Same as `adamGradientDescent` but uses `defaultAdamConfig` for
+-- configuration.
+adamGradientDescent' :: (Traversable f, Floating a, NFData a)
+                     => (forall s. Reifies s Tape => f (Reverse s a) -> Reverse s a)
+                     -> f a
+                     -> [f a]
+adamGradientDescent' evaluator structure = adamGradientDescent evaluator structure defaultAdamConfig
+{-# INLINE adamGradientDescent' #-}
+
 -- | A piped version of `adamGradientDescent`. This lets you thread a monad
 -- through the process.
-adamGradientDescentPipe :: (Traversable f, Fractional a, Floating a, Ord a, NFData a, Monad m)
+adamGradientDescentPipe :: (Traversable f, Floating a, NFData a, Monad m)
                         => (f a -> m (f a))
                         -> f a
                         -> AdamConfig a
@@ -97,11 +107,8 @@ adamGradientDescentPipe next_gradient structure config =
     gradient <- fmap toList $ lift $ lift $ next_gradient structure
     st <- get
 
-    let new_first_moment = flip fmap (zip (firstMoment st) gradient) $ \(m, g) ->
-                             (b1 config * m) + (1 - b1 config) * g
-        new_second_moment = flip fmap (zip (secondMoment st) gradient) $ \(m, g) ->
-                              (b2 config * m) + (1 - b2 config) * g * g
-
+    let new_first_moment = zipWith (\m g -> (b1 config * m) + (1 - b1 config) * g) (firstMoment st) gradient
+        new_second_moment = zipWith (\m g -> (b2 config * m) + (1 - b2 config) * g * g) (secondMoment st) gradient
         bias_corrected_first_moment  = fmap (\v -> (v / (1 - b1t st))) new_first_moment
         bias_corrected_second_moment = fmap (\v -> (v / (1 - b2t st))) new_second_moment
 
