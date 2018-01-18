@@ -66,15 +66,14 @@ adamGradientDescent :: (Traversable f, Fractional a, Floating a, NFData a)
                     -> AdamConfig a
                     -> [f a]
 adamGradientDescent evaluator structure config =
-  runIdentity $ runEffect $
-    adamGradientDescentPipe (\structure -> return $ grad evaluator structure)
-                            structure
-                            config >->
-    yielder
+  go (adamGradientDescentPipe (\structure -> return $ grad evaluator structure)
+                              structure
+                              config)
  where
-  yielder = do
-    item <- await
-    (item:) <$> yielder
+  go producer = case runIdentity $ next producer of
+    Left _ -> []
+    Right (value, next_producer) ->
+      value:go next_producer
 
 -- | Same as `adamGradientDescent` but uses `defaultAdamConfig` for
 -- configuration.
