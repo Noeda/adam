@@ -53,8 +53,12 @@ data AdamState a = AdamState
 zipWithTraversable :: Traversable f => f a -> [b] -> (a -> b -> c) -> f c
 zipWithTraversable structure zipping action = flip evalState zipping $
   for structure $ \value -> do
-    (zip_item:rest) <- get
-    put rest
+    item <- get
+    zip_item <- case item of
+      (zip_item:rest) -> do
+        put rest
+        return zip_item
+      _ -> error "impossible"
 
     return (action value zip_item)
 {-# INLINE zipWithTraversable #-}
